@@ -298,6 +298,8 @@ pub struct AdapterStatus {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Fidelity {
+    NativeResume,
+    // Old handoff manifests still describe forks, even though new same-harness launches resume.
     NativeFork,
     SupportedImport,
     CompatibleWriter,
@@ -307,6 +309,7 @@ pub enum Fidelity {
 impl fmt::Display for Fidelity {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
+            Self::NativeResume => "resume original",
             Self::NativeFork => "native fork",
             Self::SupportedImport => "supported import",
             Self::CompatibleWriter => "compatible writer",

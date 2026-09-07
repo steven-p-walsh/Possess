@@ -11,17 +11,21 @@ that later versions use the same private schema.
 
 | Harness | Discovery and normalization | Same-harness path | Cross-harness path |
 | --- | --- | --- | --- |
-| Codex | read-only `state_5.sqlite`, streaming rollout JSONL fallback | `codex fork` | writer only on `0.153.4`, then bootstrap |
-| Claude Code | bounded metadata tail, streaming project JSONL | `--resume --fork-session` | writer on `2.1.x`, then bootstrap |
-| OpenCode | read-only SQLite transaction | `--session --fork` | official `opencode import` |
-| Grok | `summary.json`, streaming chat or ACP updates | `--resume --fork-session` | interactive bootstrap |
+| Codex | read-only `state_5.sqlite`, streaming rollout JSONL fallback | `codex resume` | writer only on `0.153.4`, then bootstrap |
+| Claude Code | bounded metadata tail, streaming project JSONL | `--resume` | writer on `2.1.x`, then bootstrap |
+| OpenCode | read-only SQLite transaction | `--session` | official `opencode import` |
+| Grok | `summary.json`, streaming chat or ACP updates | `--resume` | interactive bootstrap |
+
+Since Possess 0.1.1, choosing the source harness resumes the original session ID.
+It skips history loading, Git capture, package creation, and import. The TUI also
+skips model and agent selection; explicit CLI overrides are passed to the resume
+command. Private format compatibility gates apply only when changing harnesses.
 
 ## Codex
 
-Codex documents `resume` and `fork` as stable commands; a fork gets a fresh ID while the
-original transcript remains untouched. It also documents the app server as experimental.
-Possess therefore uses the CLI for same-harness work and treats the local database and
-rollout layout as implementation details.
+Codex documents `resume` and `fork` as stable commands. Possess uses `resume` for
+same-harness work so it keeps the existing session ID. It treats the local database
+and rollout layout as implementation details.
 
 On `0.153.4`, `state_5.sqlite` provides titles, paths, workspace metadata, model, and
 recency. Rollouts contain JSONL `session_meta`, `response_item`, and `event_msg` records.
@@ -44,6 +48,21 @@ The compatible writer emits a minimal linked transcript only for the observed `2
 family. A failed write falls back to a bootstrap and never changes the source transcript.
 
 Source: [Claude Code CLI reference](https://docs.anthropic.com/en/docs/claude-code/cli-usage).
+
+### Claude model discovery
+
+The installed CLI has no standalone `models` command. Possess builds an offline list
+from user and project settings (`model`, `availableModels`, and `modelOverrides`),
+model-related environment variables, and model IDs in the 100 most recent session
+summaries. Fable, Opus, Sonnet, and Haiku remain as fallback aliases. The wizard also
+accepts a typed model ID and refreshes discovered choices when the session list is
+refreshed.
+
+These are local suggestions, not a live account-entitlement check or a reproduction of
+Claude's policy settings. Claude applies its own availability and organization rules at
+launch. Possess does not query model APIs or invoke credential helpers for this list.
+
+Source: [Claude model configuration](https://code.claude.com/docs/en/model-config).
 
 ## OpenCode
 

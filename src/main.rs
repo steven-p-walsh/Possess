@@ -10,6 +10,7 @@ mod engine;
 mod git_state;
 mod handoff;
 mod launcher;
+mod project;
 mod sensitivity;
 mod tui;
 
@@ -19,6 +20,7 @@ use cli::{Cli, Commands};
 use config::Config;
 use domain::{Harness, LaunchRequest, PortableEvent, Role};
 use engine::Engine;
+use project::SessionScope;
 
 fn main() {
     if let Err(error) = run() {
@@ -30,7 +32,8 @@ fn main() {
 fn run() -> Result<()> {
     let cli = Cli::parse();
     let config = Config::load()?;
-    let engine = Engine::new(config);
+    let scope = SessionScope::from_launch_directory(cli.all_projects)?;
+    let engine = Engine::new(config, scope);
     match cli.command {
         None => tui::run(&engine),
         Some(Commands::List { harness, json }) => {
@@ -111,24 +114,38 @@ fn run() -> Result<()> {
                 launch: !no_launch,
             };
             let transfer = engine.transfer(&summary, &request)?;
-            if json {
+            if let Some(package) = &transfer.package {
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::json!({ "handoff_id": package.id, "package": package.dir, "fidelity": transfer.prepared.fidelity, "destination_session_id": transfer.prepared.destination_session_id, "sensitivity": package.findings })
+                    );
+                } else {
+                    println!(
+                        "Possessed {} → {} ({})",
+                        summary.harness, request.destination, transfer.prepared.fidelity
+                    );
+                    println!("Package: {}", package.dir.display());
+                    if !package.findings.is_empty() {
+                        println!(
+                            "Sensitivity scan: {} potential finding group(s)",
+                            package.findings.len()
+                        );
+                    }
+                    println!("{}", transfer.prepared.detail);
+                }
+            } else if json {
                 println!(
                     "{}",
-                    serde_json::json!({ "handoff_id": transfer.package.id, "package": transfer.package.dir, "fidelity": transfer.prepared.fidelity, "destination_session_id": transfer.prepared.destination_session_id, "sensitivity": transfer.package.findings })
+                    serde_json::json!({ "handoff_id": null, "package": null, "fidelity": transfer.prepared.fidelity, "destination_session_id": transfer.prepared.destination_session_id, "sensitivity": [] })
                 );
+            } else if request.launch {
+                println!("Resuming {} in {}", summary.vendor_id, summary.harness);
             } else {
                 println!(
-                    "Possessed {} → {} ({})",
-                    summary.harness, request.destination, transfer.prepared.fidelity
+                    "Ready to resume {} in {}",
+                    summary.vendor_id, summary.harness
                 );
-                println!("Package: {}", transfer.package.dir.display());
-                if !transfer.package.findings.is_empty() {
-                    println!(
-                        "Sensitivity scan: {} potential finding group(s)",
-                        transfer.package.findings.len()
-                    );
-                }
-                println!("{}", transfer.prepared.detail);
             }
             if request.launch {
                 let status = launcher::launch(&transfer.prepared)
@@ -141,7 +158,7 @@ fn run() -> Result<()> {
         }
         Some(Commands::Resume { id }) => {
             let summary = engine.find(&id)?;
-            let prepared = launcher::native_resume(&engine.config, &summary);
+            let prepared = launcher::native_resume(&engine.config, &summary, None);
             let status = launcher::launch(&prepared)?;
             if !status.success() {
                 anyhow::bail!("{} exited with {status}", summary.harness);

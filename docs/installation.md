@@ -61,13 +61,19 @@ source ~/.zshrc
 
 ## Verify the installation
 
-Check the installed version and inspect the detected harnesses:
+Run these from the project you want to work on:
 
 ```bash
 possess --version
 possess doctor
 possess list
 ```
+
+The picker and `possess list` show sessions for the Git working tree containing
+your launch directory. You can launch from any subdirectory; separate worktrees
+and nested repositories keep their own session lists. Outside Git, Possess uses
+the current directory and its subdirectories. Use `possess --all-projects` or
+`possess list --all-projects` to browse everything.
 
 `possess doctor` reports the executable, version, session directory, and available
 transfer tier for every adapter. A harness can be absent without preventing the other

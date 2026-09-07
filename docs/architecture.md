@@ -6,12 +6,13 @@ stay separate because each has a different stability and size requirement.
 
 ```mermaid
 flowchart LR
-    A[Vendor stores] -->|read-only adapters| B[PortableSessionV1]
+    A[Vendor stores] -->|metadata| S[Sessions in launch project]
+    S -->|same harness: resume| F[Destination TUI]
+    S -->|different harness| B[PortableSessionV1]
     B --> C[Private handoff package]
     B --> D[Smart context packer]
     C --> E{Destination strategy}
     D --> E
-    E -->|native fork| F[Destination TUI]
     E -->|supported import| F
     E -->|version-gated writer| F
     E -->|bootstrap prompt| F
@@ -19,6 +20,11 @@ flowchart LR
 ```
 
 ## Read path
+
+The launch directory determines the project: the Git working-tree root when available,
+otherwise the current directory. Session paths are resolved through symlinks and matched
+by path components; nested repositories and other worktrees stay separate. The scope is
+captured at startup and applied to every scan and CLI lookup. `--all-projects` opts out.
 
 Adapters discover lightweight metadata first. Codex and OpenCode use local indexes;
 Claude reads a bounded transcript tail; Grok reads per-session summaries. Full history is
@@ -63,10 +69,13 @@ when it matters instead of paying for all of it in the first request.
 
 ## Launch path
 
-Possess chooses the highest-fidelity strategy that the destination and installed version
-support. Native forks and supported importers come first. Private writers have exact or
-narrow version gates. Everything else receives the smart bootstrap prompt as the first
-interactive message.
+Choosing the source harness returns a native resume command before loading history or
+creating a package. The existing session ID is kept, and the harness owns the continuation.
+The picker skips the remaining wizard steps for this path.
+
+When changing harnesses, Possess uses a supported importer or a private writer with an
+exact or narrow version gate. Everything else receives the smart bootstrap prompt as the
+first interactive message.
 
 The TUI leaves raw mode and the alternate screen before starting a destination process.
 The child harness therefore owns the terminal normally. When it exits, Possess restores

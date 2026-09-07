@@ -10,11 +10,12 @@
 
 Switch coding agents without starting the conversation over.
 
-Possess is a terminal app for moving sessions between **Codex, Claude Code,
-OpenCode, and Grok**. Handy when you hit a usage limit, get stuck in a loop, or
-want another model to take a look.
+CD to your project repo, run `possess`, pick a session, and resume or choose which agent should take over.
 
-Run `possess`, pick a session, and choose which agent should take over.
+![Possess demo: browse sessions, search, and choose a new coding agent](docs/assets/possess-demo.gif)
+
+Possess works with **Codex, Claude Code,
+OpenCode, and Grok**.
 
 ## Install
 
@@ -34,16 +35,23 @@ archives, and upgrades.
 
 ## Using it
 
-The session list shows where you've been working and where each conversation
-left off. Select one to preview it, then press `Enter` to choose a harness, model,
-and optional agent. The new harness runs in your terminal; when you exit it,
+Launch Possess from your project directory. It shows sessions for that project,
+including ones started from subdirectories of the same Git repo. Outside Git,
+it uses the current directory. Run `possess --all-projects` to see everything.
+
+Select a session to see where you left off, then press `Enter` to choose a harness.
+Choose the same harness and it just resumes the original session. Choose another
+and you can pick a model and agent before handing over. When the harness exits,
 you're back in Possess.
+
+Claude's model list picks up your settings and recently used models, with Fable,
+Opus, Sonnet, and Haiku as fallbacks. You can also enter a model name yourself.
 
 | Key | Action |
 | --- | --- |
 | Arrows or `j` / `k` | Move through sessions |
 | `/` | Search |
-| `Enter` | Switch harnesses |
+| `Enter` | Choose a harness to continue in |
 | `r` | Resume with the original harness |
 | `R` | Refresh the list |
 | `?` | All shortcuts |
@@ -75,6 +83,7 @@ You can also skip the picker. Use a session ID from `possess list`:
 
 ```bash
 possess list
+possess list --all-projects
 possess show SESSION_ID
 possess handoff SESSION_ID --to codex
 possess resume SESSION_ID
@@ -82,6 +91,7 @@ possess resume SESSION_ID
 
 Add `--model` or `--agent` to a handoff to choose either explicitly.
 `--no-launch` prepares the handoff without starting the destination harness.
+For the same harness, it only prepares a resume command; no package is created.
 Run `possess handoff --help` for the rest.
 
 ## Working on Possess

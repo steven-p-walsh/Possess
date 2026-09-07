@@ -6,6 +6,7 @@
 use crate::domain::{Harness, LaunchRequest, SessionSummary, TargetKind, TargetOption};
 use crate::engine::Engine;
 use crate::launcher;
+use crate::project::SessionScope;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use crossterm::event::{
@@ -34,15 +35,17 @@ enum Mode {
     Browse,
     Search,
     Wizard(WizardChoice),
+    ModelInput { choice: WizardChoice, value: String },
     Help,
 }
 
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone)]
 struct WizardChoice {
     step: usize,
     destination: usize,
     model: usize,
     agent: usize,
+    custom_model: Option<String>,
 }
 
 struct App {
@@ -179,6 +182,7 @@ fn handle_key(
         app.should_quit = true;
         return Ok(());
     }
+    let source_harness = app.selected().map(|session| session.harness);
     match &mut app.mode {
         Mode::Search => match code {
             KeyCode::Esc | KeyCode::Enter => app.mode = Mode::Browse,
@@ -199,6 +203,22 @@ fn handle_key(
         Mode::Help => {
             app.mode = Mode::Browse;
         }
+        Mode::ModelInput { choice, value } => match code {
+            KeyCode::Esc => app.mode = Mode::Wizard(choice.clone()),
+            KeyCode::Enter if !value.trim().is_empty() => {
+                choice.custom_model = Some(value.trim().to_owned());
+                choice.step = 2;
+                app.mode = Mode::Wizard(choice.clone());
+            }
+            KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => value.clear(),
+            KeyCode::Backspace => {
+                value.pop();
+            }
+            KeyCode::Char(character) if !character.is_control() && !character.is_whitespace() => {
+                value.push(character)
+            }
+            _ => {}
+        },
         Mode::Browse => match code {
             KeyCode::Char('q') => app.should_quit = true,
             KeyCode::Char('?') => app.mode = Mode::Help,
@@ -212,8 +232,11 @@ fn handle_key(
             }
             KeyCode::End | KeyCode::Char('G') => app.table.select(app.visible.len().checked_sub(1)),
             KeyCode::Enter => {
-                if app.selected().is_some() {
-                    app.mode = Mode::Wizard(WizardChoice::default());
+                if let Some(source) = source_harness {
+                    app.mode = Mode::Wizard(WizardChoice {
+                        destination: Harness::ALL.iter().position(|h| *h == source).unwrap_or(0),
+                        ..WizardChoice::default()
+                    });
                 }
             }
             KeyCode::Char('r') => resume_selected(terminal, engine, app)?,
@@ -225,14 +248,30 @@ fn handle_key(
             _ => {}
         },
         Mode::Wizard(choice) => {
-            let targets = engine.targets(Harness::ALL[choice.destination]);
+            if choice.step == 0
+                && source_harness == Some(Harness::ALL[choice.destination])
+                && matches!(code, KeyCode::Enter | KeyCode::Right | KeyCode::Tab)
+            {
+                // A same-harness choice is just a session picker. Skip target discovery
+                // and the transfer wizard so the harness resumes its existing state.
+                app.mode = Mode::Browse;
+                return resume_selected(terminal, engine, app);
+            }
+            let targets = if choice.step == 0 {
+                Vec::new()
+            } else {
+                engine.targets(Harness::ALL[choice.destination])
+            };
             let count = match choice.step {
                 0 => Harness::ALL.len(),
-                1 => targets
-                    .iter()
-                    .filter(|t| t.kind == TargetKind::Model)
-                    .count()
-                    .max(1),
+                1 => {
+                    targets
+                        .iter()
+                        .filter(|t| t.kind == TargetKind::Model)
+                        .count()
+                        .max(1)
+                        + 1
+                }
                 _ => targets
                     .iter()
                     .filter(|t| t.kind == TargetKind::Agent)
@@ -250,6 +289,7 @@ fn handle_key(
                     if choice.step == 0 {
                         choice.model = 0;
                         choice.agent = 0;
+                        choice.custom_model = None;
                     }
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
@@ -261,18 +301,45 @@ fn handle_key(
                     if choice.step == 0 {
                         choice.model = 0;
                         choice.agent = 0;
+                        choice.custom_model = None;
                     }
                 }
                 KeyCode::Left | KeyCode::BackTab => choice.step = choice.step.saturating_sub(1),
                 KeyCode::Right | KeyCode::Tab | KeyCode::Enter if choice.step < 3 => {
+                    if choice.step == 1 {
+                        let models = targets
+                            .iter()
+                            .filter(|target| target.kind == TargetKind::Model)
+                            .count()
+                            .max(1);
+                        if choice.model == models {
+                            app.mode = Mode::ModelInput {
+                                value: choice.custom_model.clone().unwrap_or_default(),
+                                choice: choice.clone(),
+                            };
+                            return Ok(());
+                        }
+                        choice.custom_model = None;
+                    }
                     choice.step += 1
                 }
                 KeyCode::Enter if choice.step == 3 => {
                     let destination_value = Harness::ALL[choice.destination];
-                    let selected_model = targets
-                        .iter()
-                        .filter(|t| t.kind == TargetKind::Model)
-                        .nth(choice.model);
+                    let selected_model = choice
+                        .custom_model
+                        .as_ref()
+                        .map(|id| TargetOption {
+                            id: id.clone(),
+                            label: id.clone(),
+                            kind: TargetKind::Model,
+                        })
+                        .or_else(|| {
+                            targets
+                                .iter()
+                                .filter(|t| t.kind == TargetKind::Model)
+                                .nth(choice.model)
+                                .cloned()
+                        });
                     let selected_agent = targets
                         .iter()
                         .filter(|t| t.kind == TargetKind::Agent)
@@ -282,7 +349,7 @@ fn handle_key(
                         engine,
                         app,
                         destination_value,
-                        selected_model,
+                        selected_model.as_ref(),
                         selected_agent,
                     )?;
                 }
@@ -321,18 +388,19 @@ fn perform_transfer(
             let result = launcher::launch(&transfer.prepared);
             resume_terminal(terminal)?;
             app.sessions = engine.scan();
-            app.visible = (0..app.sessions.len()).collect();
-            app.table.select((!app.sessions.is_empty()).then_some(0));
+            app.apply_filter();
             app.mode = Mode::Browse;
-            app.status = match result {
-                Ok(status) => format!(
+            app.status = match (result, &transfer.package) {
+                (Ok(status), Some(package)) => format!(
                     "Returned from {} ({status}) • package {}",
-                    destination, transfer.package.id
+                    destination, package.id
                 ),
-                Err(error) => format!(
+                (Err(error), Some(package)) => format!(
                     "Launch failed: {error} • package preserved at {}",
-                    transfer.package.dir.display()
+                    package.dir.display()
                 ),
+                (Ok(status), None) => format!("Returned from {destination} ({status})"),
+                (Err(error), None) => format!("Resume failed: {error}"),
             };
         }
         Err(error) => {
@@ -347,12 +415,12 @@ fn resume_selected(terminal: &mut Term, engine: &Engine, app: &mut App) -> Resul
     let Some(summary) = app.selected().cloned() else {
         return Ok(());
     };
-    let prepared = launcher::native_resume(&engine.config, &summary);
+    let prepared = launcher::native_resume(&engine.config, &summary, None);
     suspend(terminal)?;
     let result = launcher::launch(&prepared);
     resume_terminal(terminal)?;
     app.sessions = engine.scan();
-    app.visible = (0..app.sessions.len()).collect();
+    app.apply_filter();
     app.status = result
         .map(|s| format!("Returned from {} ({s})", summary.harness))
         .unwrap_or_else(|e| format!("Resume failed: {e}"));
@@ -375,10 +443,10 @@ fn draw(frame: &mut Frame, app: &mut App, engine: &Engine) {
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(62), Constraint::Percentage(38)])
             .split(chunks[1]);
-        draw_table(frame, body[0], app);
+        draw_table(frame, body[0], app, &engine.scope);
         draw_preview(frame, body[1], app, engine);
     } else {
-        draw_table(frame, chunks[1], app);
+        draw_table(frame, chunks[1], app, &engine.scope);
     }
     let status = if matches!(app.mode, Mode::Search) {
         format!("/{}█", app.filter)
@@ -392,6 +460,24 @@ fn draw(frame: &mut Frame, app: &mut App, engine: &Engine) {
     match app.mode {
         Mode::Wizard(ref choice) => draw_wizard(frame, centered(area, 72, 72), app, engine, choice),
         Mode::Help => draw_help(frame, centered(area, 62, 60)),
+        Mode::ModelInput { ref value, .. } => {
+            let input_area = centered(area, 70, 35);
+            frame.render_widget(Clear, input_area);
+            frame.render_widget(
+                Paragraph::new(format!(
+                    "Model name or alias\n\n{value}█\n\nEnter continue • Esc back • Ctrl+U clear"
+                ))
+                .wrap(Wrap { trim: false })
+                .block(
+                    Block::default()
+                        .title(" MODEL ")
+                        .borders(Borders::ALL)
+                        .padding(ratatui::widgets::Padding::uniform(1)),
+                )
+                .style(Style::default().bg(Color::Rgb(19, 16, 29)).fg(Color::White)),
+                input_area,
+            );
+        }
         _ => {}
     }
 }
@@ -446,7 +532,10 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App, engine: &Engine) {
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(Span::styled(
-            "Cross-harness session continuity",
+            engine.scope.root().map_or_else(
+                || "All projects".to_owned(),
+                |root| format!("Project: {}", root.display()),
+            ),
             Style::default().fg(Color::DarkGray),
         )),
         Line::from(""),
@@ -471,7 +560,46 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App, engine: &Engine) {
     frame.render_widget(tagline, area);
 }
 
-fn draw_table(frame: &mut Frame, area: Rect, app: &mut App) {
+fn draw_table(frame: &mut Frame, area: Rect, app: &mut App, scope: &SessionScope) {
+    let project = scope.root().map_or_else(
+        || "all projects".to_owned(),
+        |root| {
+            root.file_name()
+                .unwrap_or(root.as_os_str())
+                .to_string_lossy()
+                .into_owned()
+        },
+    );
+    let block = Block::default()
+        .borders(Borders::TOP)
+        .border_style(Style::default().fg(Color::Rgb(67, 58, 95)))
+        .title(format!(
+            " Sessions • {project}{} ",
+            if app.filter.is_empty() {
+                String::new()
+            } else {
+                format!(" • filter: {}", app.filter)
+            }
+        ));
+    if app.visible.is_empty() {
+        let message = if !app.filter.is_empty() {
+            "No sessions match your search. Press / then Ctrl+U to clear it.".to_owned()
+        } else if let Some(root) = scope.root() {
+            format!(
+                "No sessions in {}.\n\nRun possess --all-projects to browse elsewhere, or possess doctor to check your harnesses.",
+                root.display()
+            )
+        } else {
+            "No sessions found. Run possess doctor to check your harnesses.".to_owned()
+        };
+        frame.render_widget(
+            Paragraph::new(message)
+                .wrap(Wrap { trim: true })
+                .block(block),
+            area,
+        );
+        return;
+    }
     let rows = app
         .visible
         .iter()
@@ -509,26 +637,14 @@ fn draw_table(frame: &mut Frame, area: Rect, app: &mut App) {
             .add_modifier(Modifier::BOLD),
     )
     .highlight_symbol("  ▸ ")
-    .block(
-        Block::default()
-            .borders(Borders::TOP)
-            .border_style(Style::default().fg(Color::Rgb(67, 58, 95)))
-            .title(format!(
-                " Sessions{} ",
-                if app.filter.is_empty() {
-                    "".into()
-                } else {
-                    format!(" • filter: {}", app.filter)
-                }
-            )),
-    );
+    .block(block);
     frame.render_stateful_widget(table, area, &mut app.table);
 }
 
 fn draw_preview(frame: &mut Frame, area: Rect, app: &App, engine: &Engine) {
     let Some(session) = app.selected() else {
         frame.render_widget(
-            Paragraph::new("No sessions found. Run `possess doctor` to inspect adapters.")
+            Paragraph::new("Select a session to preview where you left off.")
                 .block(Block::default().borders(Borders::LEFT)),
             area,
         );
@@ -593,12 +709,11 @@ fn draw_preview(frame: &mut Frame, area: Rect, app: &App, engine: &Engine) {
 }
 
 fn draw_wizard(frame: &mut Frame, area: Rect, app: &App, engine: &Engine, choice: &WizardChoice) {
-    let WizardChoice {
-        step,
-        destination,
-        model,
-        agent,
-    } = *choice;
+    let (step, destination, model, agent) =
+        (choice.step, choice.destination, choice.model, choice.agent);
+    let resumes_original = app
+        .selected()
+        .is_some_and(|session| session.harness == Harness::ALL[destination]);
     frame.render_widget(Clear, area);
     let block = Block::default()
         .title(" POSSESS SESSION ")
@@ -614,24 +729,28 @@ fn draw_wizard(frame: &mut Frame, area: Rect, app: &App, engine: &Engine, choice
     ])
     .split(inner);
     frame.render_widget(
-        Paragraph::new(format!(
-            "1 Destination {}  2 Model {}  3 Agent {}  4 Confirm",
-            if step == 0 { "●" } else { "✓" },
-            if step == 1 {
-                "●"
-            } else if step > 1 {
-                "✓"
-            } else {
-                "○"
-            },
-            if step == 2 {
-                "●"
-            } else if step > 2 {
-                "✓"
-            } else {
-                "○"
-            }
-        ))
+        Paragraph::new(if resumes_original {
+            "Resume the original session".to_owned()
+        } else {
+            format!(
+                "1 Destination {}  2 Model {}  3 Agent {}  4 Confirm",
+                if step == 0 { "●" } else { "✓" },
+                if step == 1 {
+                    "●"
+                } else if step > 1 {
+                    "✓"
+                } else {
+                    "○"
+                },
+                if step == 2 {
+                    "●"
+                } else if step > 2 {
+                    "✓"
+                } else {
+                    "○"
+                }
+            )
+        })
         .alignment(Alignment::Center)
         .style(Style::default().fg(Color::Rgb(190, 174, 255))),
         chunks[0],
@@ -665,7 +784,7 @@ fn draw_wizard(frame: &mut Frame, area: Rect, app: &App, engine: &Engine, choice
             TargetKind::Agent
         };
         let models: Vec<_> = targets.into_iter().filter(|v| v.kind == kind).collect();
-        let labels = if models.is_empty() {
+        let mut labels: Vec<ListItem> = if models.is_empty() {
             vec![ListItem::new(if step == 1 {
                 " Use destination default model"
             } else {
@@ -677,6 +796,12 @@ fn draw_wizard(frame: &mut Frame, area: Rect, app: &App, engine: &Engine, choice
                 .map(|v| ListItem::new(format!(" {}", v.label)))
                 .collect()
         };
+        if step == 1 {
+            labels.push(ListItem::new(choice.custom_model.as_ref().map_or_else(
+                || " Enter a model name…".to_owned(),
+                |id| format!(" {id} (edit model name…)"),
+            )));
+        }
         let mut state =
             ListState::default().with_selected(Some(if step == 1 { model } else { agent }));
         frame.render_stateful_widget(
@@ -690,11 +815,16 @@ fn draw_wizard(frame: &mut Frame, area: Rect, app: &App, engine: &Engine, choice
         let source = app.selected().unwrap();
         let destination = Harness::ALL[destination];
         let targets = engine.targets(destination);
-        let model_label = targets
-            .iter()
-            .filter(|target| target.kind == TargetKind::Model)
-            .nth(model)
-            .map(|target| target.label.as_str())
+        let model_label = choice
+            .custom_model
+            .as_deref()
+            .or_else(|| {
+                targets
+                    .iter()
+                    .filter(|target| target.kind == TargetKind::Model)
+                    .nth(model)
+                    .map(|target| target.label.as_str())
+            })
             .unwrap_or("destination default");
         let agent_label = targets
             .iter()
@@ -722,7 +852,9 @@ fn draw_wizard(frame: &mut Frame, area: Rect, app: &App, engine: &Engine, choice
         );
     }
     frame.render_widget(
-        Paragraph::new(if step == 3 {
+        Paragraph::new(if resumes_original {
+            "Enter resume  •  ↑↓ choose harness  •  Esc cancel"
+        } else if step == 3 {
             "Enter repossess  •  ← back  •  Esc cancel"
         } else {
             "Enter/→ next  •  ↑↓ choose  •  Esc cancel"
@@ -735,7 +867,7 @@ fn draw_wizard(frame: &mut Frame, area: Rect, app: &App, engine: &Engine, choice
 
 fn draw_help(frame: &mut Frame, area: Rect) {
     frame.render_widget(Clear, area);
-    let help = "NAVIGATION\n  j/k or ↑/↓    select session\n  PgUp/PgDn      jump ten sessions\n  g/G            first / last\n  /              fuzzy search (Ctrl+U clears)\n\nACTIONS\n  Enter          repossess into another harness\n  r              resume in original harness\n  R              refresh all stores\n  ?              this help\n  q / Ctrl+C     quit\n\nPossess never mutates the source session.";
+    let help = "NAVIGATION\n  j/k or ↑/↓    select session\n  PgUp/PgDn      jump ten sessions\n  g/G            first / last\n  /              fuzzy search (Ctrl+U clears)\n\nACTIONS\n  Enter          choose a harness to continue in\n  r              resume in original harness\n  R              refresh this session list\n  ?              this help\n  q / Ctrl+C     quit\n\nSame harness: resume the original session.\nOther projects: launch with --all-projects.";
     frame.render_widget(
         Paragraph::new(help)
             .block(

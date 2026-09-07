@@ -261,37 +261,189 @@ impl HarnessAdapter for ClaudeAdapter {
     }
 
     fn discover_targets(&self) -> Result<Vec<TargetOption>> {
-        let mut targets = vec![
-            TargetOption {
-                id: "default".into(),
-                label: "Claude default".into(),
-                kind: TargetKind::Model,
-            },
-            TargetOption {
-                id: "sonnet".into(),
-                label: "Sonnet".into(),
-                kind: TargetKind::Model,
-            },
-            TargetOption {
-                id: "opus".into(),
-                label: "Opus".into(),
-                kind: TargetKind::Model,
-            },
-            TargetOption {
-                id: "haiku".into(),
-                label: "Haiku".into(),
-                kind: TargetKind::Model,
-            },
-            TargetOption {
-                id: "default".into(),
-                label: "Claude default agent".into(),
-                kind: TargetKind::Agent,
-            },
-        ];
+        let cwd = std::env::current_dir()?;
+        let project = crate::project::repository_root(&cwd).unwrap_or(cwd);
+        let settings: Vec<Value> = [
+            self.home.join("settings.json"),
+            project.join(".claude/settings.json"),
+            project.join(".claude/settings.local.json"),
+        ]
+        .into_iter()
+        .filter_map(|path| serde_json::from_slice(&std::fs::read(path).ok()?).ok())
+        .collect();
+        // Claude has no standalone model-catalog command. Local metadata keeps this
+        // picker useful offline without starting a session, running hooks, or using auth.
+        let recent = self
+            .list_sessions()
+            .unwrap_or_default()
+            .into_iter()
+            .take(100)
+            .filter_map(|session| session.model);
+        let mut targets = model_options(&settings, recent, |key| std::env::var(key).ok());
+        targets.push(TargetOption {
+            id: "default".into(),
+            label: "Claude default agent".into(),
+            kind: TargetKind::Agent,
+        });
         targets.extend(markdown_targets(&[
             self.home.join("agents"),
-            PathBuf::from(".claude/agents"),
+            project.join(".claude/agents"),
         ]));
         Ok(targets)
+    }
+}
+
+fn model_options(
+    settings: &[Value],
+    recent: impl IntoIterator<Item = String>,
+    environment: impl Fn(&str) -> Option<String>,
+) -> Vec<TargetOption> {
+    let mut models = BTreeMap::new();
+    // Aliases remain useful on a fresh install; Claude resolves their versions and
+    // checks account availability when launched. The rest of the list is discovered.
+    for (id, label) in [
+        ("fable", "Fable"),
+        ("opus", "Opus"),
+        ("sonnet", "Sonnet"),
+        ("haiku", "Haiku"),
+    ] {
+        insert_model(&mut models, id, Some(label));
+    }
+    for id in recent {
+        insert_model(&mut models, &id, None);
+    }
+    for settings in settings {
+        if let Some(model) = settings.get("model").and_then(Value::as_str) {
+            insert_model(&mut models, model, None);
+        }
+        if let Some(allowed) = settings.get("availableModels").and_then(Value::as_array) {
+            for model in allowed.iter().filter_map(Value::as_str) {
+                insert_model(&mut models, model, None);
+            }
+        }
+        if let Some(overrides) = settings.get("modelOverrides").and_then(Value::as_object) {
+            for (model, provider_id) in overrides {
+                insert_model(&mut models, model, None);
+                if let Some(id) = provider_id.as_str() {
+                    insert_model(&mut models, id, None);
+                }
+            }
+        }
+        add_environment_models(&mut models, |key| {
+            settings.get("env")?.get(key)?.as_str().map(str::to_owned)
+        });
+    }
+    add_environment_models(&mut models, environment);
+    let mut options = vec![TargetOption {
+        id: "default".into(),
+        label: "Claude default".into(),
+        kind: TargetKind::Model,
+    }];
+    options.extend(models.into_iter().map(|(id, label)| TargetOption {
+        id,
+        label,
+        kind: TargetKind::Model,
+    }));
+    options
+}
+
+fn add_environment_models(
+    models: &mut BTreeMap<String, String>,
+    read: impl Fn(&str) -> Option<String>,
+) {
+    // Only model-related variables are read. Settings may also hold credentials and
+    // command helpers, neither of which belongs in discovery or should be executed.
+    for key in [
+        "ANTHROPIC_MODEL",
+        "ANTHROPIC_DEFAULT_MODEL",
+        "ANTHROPIC_CUSTOM_MODEL_OPTION",
+        "ANTHROPIC_DEFAULT_FABLE_MODEL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    ] {
+        if let Some(id) = read(key) {
+            let label = read(&format!("{key}_NAME"));
+            insert_model(models, &id, label.as_deref());
+        }
+    }
+}
+
+fn insert_model(models: &mut BTreeMap<String, String>, id: &str, label: Option<&str>) {
+    let id = id.trim();
+    if id.is_empty()
+        || id == "default"
+        || id == "inherit"
+        || id
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
+        || id.contains(['<', '>'])
+    {
+        return;
+    }
+    let label = label.filter(|value| !value.trim().is_empty());
+    if let Some(label) = label {
+        models.insert(
+            id.into(),
+            label.chars().filter(|c| !c.is_control()).collect(),
+        );
+    } else {
+        models.entry(id.into()).or_insert_with(|| id.into());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn claude_models_follow_local_configuration_and_history_without_a_cli() {
+        let settings = json!({
+            "model": "claude-fable-future",
+            "availableModels": ["claude-org-model", "sonnet"],
+            "modelOverrides": { "claude-team-model": "provider/team-deployment" },
+            "env": {
+                "ANTHROPIC_DEFAULT_FABLE_MODEL": "provider/fable-deployment",
+                "ANTHROPIC_CUSTOM_MODEL_OPTION": "gateway/team-model",
+                "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME": "Team model",
+                "ANTHROPIC_API_KEY": "secret-must-not-be-listed"
+            },
+            "apiKeyHelper": "must-not-be-executed"
+        });
+        let recent = [
+            "claude-from-history".into(),
+            "sonnet".into(),
+            "<synthetic>".into(),
+        ];
+        let options = model_options(&[settings], recent, |key| {
+            (key == "ANTHROPIC_MODEL").then(|| "claude-from-environment".into())
+        });
+        let ids: Vec<_> = options.iter().map(|option| option.id.as_str()).collect();
+        for expected in [
+            "default",
+            "fable",
+            "claude-fable-future",
+            "claude-org-model",
+            "claude-team-model",
+            "provider/team-deployment",
+            "provider/fable-deployment",
+            "gateway/team-model",
+            "claude-from-history",
+            "claude-from-environment",
+        ] {
+            assert!(ids.contains(&expected), "missing {expected}");
+        }
+        assert_eq!(ids.iter().filter(|id| **id == "sonnet").count(), 1);
+        assert!(!ids.contains(&"secret-must-not-be-listed"));
+        assert!(!ids.contains(&"<synthetic>"));
+        assert_eq!(
+            options
+                .iter()
+                .find(|option| option.id == "gateway/team-model")
+                .unwrap()
+                .label,
+            "Team model"
+        );
     }
 }

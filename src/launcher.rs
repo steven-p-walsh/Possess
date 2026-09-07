@@ -27,7 +27,7 @@ pub struct PreparedLaunch {
 
 pub fn preferred_fidelity(config: &Config, source: Harness, destination: Harness) -> Fidelity {
     if source == destination {
-        return Fidelity::NativeFork;
+        return Fidelity::NativeResume;
     }
     match destination {
         Harness::OpenCode => Fidelity::SupportedImport,
@@ -49,10 +49,6 @@ pub fn prepare(
     } else {
         std::env::current_dir()?
     };
-    if session.source.harness == request.destination {
-        return Ok(native_fork(binary, session, request, cwd));
-    }
-
     match request.destination {
         Harness::OpenCode => prepare_opencode(config, session, package, request, cwd),
         Harness::Codex if codex_writer_supported(config) => {
@@ -75,14 +71,18 @@ pub fn launch(prepared: &PreparedLaunch) -> Result<ExitStatus> {
         .with_context(|| format!("failed to launch {}", prepared.program.display()))
 }
 
-pub fn native_resume(config: &Config, session: &crate::domain::SessionSummary) -> PreparedLaunch {
+pub fn native_resume(
+    config: &Config,
+    session: &crate::domain::SessionSummary,
+    request: Option<&LaunchRequest>,
+) -> PreparedLaunch {
     let program = config.binary(session.harness);
     let cwd = if session.cwd.exists() {
         session.cwd.clone()
     } else {
         std::env::current_dir().unwrap_or_default()
     };
-    let args = match session.harness {
+    let mut args = match session.harness {
         Harness::Codex => vec![
             "resume".into(),
             session.vendor_id.clone(),
@@ -102,56 +102,16 @@ pub fn native_resume(config: &Config, session: &crate::domain::SessionSummary) -
             session.vendor_id.clone(),
         ],
     };
+    if let Some(request) = request {
+        add_target_args(&mut args, request);
+    }
     PreparedLaunch {
-        fidelity: Fidelity::NativeFork,
+        fidelity: Fidelity::NativeResume,
         destination_session_id: Some(session.vendor_id.clone()),
         program,
         args,
         cwd,
         detail: "resuming original native session".into(),
-    }
-}
-
-fn native_fork(
-    binary: PathBuf,
-    session: &PortableSessionV1,
-    request: &LaunchRequest,
-    cwd: PathBuf,
-) -> PreparedLaunch {
-    let mut args = match request.destination {
-        Harness::Codex => vec![
-            "fork".into(),
-            session.source.vendor_id.clone(),
-            "-C".into(),
-            cwd.display().to_string(),
-        ],
-        Harness::Claude => vec![
-            "--resume".into(),
-            session.source.vendor_id.clone(),
-            "--fork-session".into(),
-        ],
-        Harness::OpenCode => vec![
-            cwd.display().to_string(),
-            "--session".into(),
-            session.source.vendor_id.clone(),
-            "--fork".into(),
-        ],
-        Harness::Grok => vec![
-            "--cwd".into(),
-            cwd.display().to_string(),
-            "--resume".into(),
-            session.source.vendor_id.clone(),
-            "--fork-session".into(),
-        ],
-    };
-    add_target_args(&mut args, request);
-    PreparedLaunch {
-        fidelity: Fidelity::NativeFork,
-        destination_session_id: None,
-        program: binary,
-        args,
-        cwd,
-        detail: "destination will fork the original native session".into(),
     }
 }
 

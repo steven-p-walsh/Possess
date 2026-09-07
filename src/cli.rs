@@ -11,13 +11,16 @@ use clap::{Parser, Subcommand};
     about = "Repossess coding-agent sessions across harnesses"
 )]
 pub struct Cli {
+    /// Include sessions from every project instead of the launch directory's project.
+    #[arg(long, global = true)]
+    pub all_projects: bool,
     #[command(subcommand)]
     pub command: Option<Commands>,
 }
 
 #[derive(Debug, Subcommand)]
 pub enum Commands {
-    /// List sessions across all installed harnesses.
+    /// List this project's sessions across all installed harnesses.
     List {
         #[arg(long)]
         harness: Option<String>,
@@ -30,7 +33,7 @@ pub enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Prepare a handoff and optionally launch its destination.
+    /// Switch harnesses, or resume directly when the destination is the source harness.
     Handoff {
         id: String,
         #[arg(long)]
