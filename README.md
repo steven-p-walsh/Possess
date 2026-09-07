@@ -1,12 +1,5 @@
 # Possess
 
-Repossess your coding session when a harness runs out of usage, gets stuck, or needs a
-different model's perspective.
-
-Possess is a local-first TUI that discovers sessions from Codex, Claude Code, OpenCode,
-and Grok, then carries the useful state into another harness. The original session is
-never changed.
-
 ```text
        ▄████▄
      ▄█ ◉  ◉ █▄     P O S S E S S
@@ -15,178 +8,90 @@ never changed.
      ▀█▄▀  ▀▄█▀
 ```
 
-## What transfers
+Switch coding agents without starting the conversation over.
 
-Possess keeps two representations for different jobs:
+Possess is a terminal app for moving sessions between **Codex, Claude Code,
+OpenCode, and Grok**. Handy when you hit a usage limit, get stuck in a loop, or
+want another model to take a look.
 
-- A private, immutable package preserves the normalized conversation, tool calls and
-  results, plans, attachments, source metadata, and Git state. Sanitized source records
-  are content-addressed and compressed so repeat handoffs do not duplicate large files.
-- A smart handoff prompt prioritizes summaries, active todos, unresolved errors, Git
-  state, files touched, and the newest useful turns. This avoids spending a destination
-  model's whole context window on stale tool output.
-
-The destination is selected using the strongest available integration:
-
-| Destination | Preferred path | Fallback |
-| --- | --- | --- |
-| Codex | native fork or version-gated rollout | smart bootstrap |
-| Claude Code | native fork or version-gated transcript | smart bootstrap |
-| OpenCode | first-party JSON import | smart bootstrap |
-| Grok | native fork | initial-prompt bootstrap |
-
-Private writers are intentionally narrow. An unknown harness version falls back instead
-of creating a native-looking session that the harness cannot safely resume.
-
-The reasoning behind those tiers and the formats observed during implementation is in
-[Compatibility research](docs/compatibility.md). The package lifecycle and trust
-boundaries are in [Architecture](docs/architecture.md).
+Run `possess`, pick a session, and choose which agent should take over.
 
 ## Install
 
-Possess supports macOS and Linux. Building from source requires Rust 1.92 or newer,
-Git, and at least one supported coding harness installed and authenticated.
+You'll need macOS or Linux, Git, and Rust 1.92+. Install and log into whichever
+coding harnesses you want to use first.
 
 ```bash
 git clone https://github.com/steven-p-walsh/Possess.git
 cd Possess
 cargo install --path . --locked
-
-possess doctor
 possess
 ```
 
-Cargo installs the binary in `~/.cargo/bin`. If `possess` is not found after installation,
-add that directory to your shell path:
+If your shell can't find `possess`, check that `~/.cargo/bin` is on your `PATH`.
+See the [installation guide](docs/installation.md) for setup help, release
+archives, and upgrades.
 
-```bash
-echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.zshrc
-source ~/.zshrc
-```
+## Using it
 
-Prebuilt archives, manual release installation, upgrades, uninstall steps, and harness
-configuration are covered in [Installation](docs/installation.md).
-
-Possess itself does not require API keys or call model APIs; invoked harnesses continue
-to own their authentication and network behavior.
-
-Tagged releases build native macOS and Linux archives through
-[the release workflow](.github/workflows/release.yml).
-
-## TUI
-
-The main screen combines sessions from every installed harness. Select a session to see
-its source, workspace, latest state, and the fidelity available for each destination.
+The session list shows where you've been working and where each conversation
+left off. Select one to preview it, then press `Enter` to choose a harness, model,
+and optional agent. The new harness runs in your terminal; when you exit it,
+you're back in Possess.
 
 | Key | Action |
 | --- | --- |
-| `j` / `k`, arrows | Move between sessions |
-| `PageUp` / `PageDown` | Jump ten sessions |
-| `g` / `G` | First / last session |
-| `/` | Fuzzy-search title, project, ID, path, and harness; `Ctrl+U` clears |
-| `Enter` | Choose a destination and repossess the session |
-| `r` | Resume in the original harness |
-| `R` | Rescan every harness store |
-| `?` | Show help |
-| `q`, `Ctrl+C` | Quit |
+| Arrows or `j` / `k` | Move through sessions |
+| `/` | Search |
+| `Enter` | Switch harnesses |
+| `r` | Resume with the original harness |
+| `R` | Refresh the list |
+| `?` | All shortcuts |
+| `q` | Quit |
 
-Possess suspends its screen while the destination runs in the same terminal. When that
-harness exits, the unified list returns and refreshes.
+If a harness or its sessions aren't showing up, run `possess doctor` to check
+what was detected. You can set custom paths in `~/.config/possess/config.toml`;
+the [setup guide](docs/installation.md#verify-the-installation) has an example.
 
-## CLI
+## What comes along
 
-The CLI uses the same adapters and transfer engine as the TUI.
+Possess saves the conversation, tool calls and results, plans, and Git state in
+a local handoff package. Your project stays in place, and the original session
+stays available.
+
+The harnesses don't share a session format. Possess imports history where it
+can; otherwise it starts the new agent with a handoff prompt built around recent
+work, open tasks, and errors. The saved history is there if the agent needs more
+detail. Which path you get depends on the harness and version; the
+[compatibility notes](docs/compatibility.md) cover that.
+
+Handoffs live in `~/.local/share/possess` (or `POSSESS_HOME`). They can contain
+private conversation and code, so keep them out of your repo. Possess doesn't
+need API keys of its own; each harness uses its existing login.
+
+## From the command line
+
+You can also skip the picker. Use a session ID from `possess list`:
 
 ```bash
-# List everything, or one harness
 possess list
-possess list --harness claude --json
-
-# Inspect normalized history without changing anything
-possess show claude:9c50e430-fc70-4d54-b0fa-5014b9e779d2
-
-# Create and launch a handoff
-possess handoff <qualified-id> --to codex
-possess handoff <qualified-id> --to grok --model grok-4.6
-possess handoff <qualified-id> --to claude --agent reviewer
-
-# Prepare a destination and package without launching its TUI
-possess handoff <qualified-id> --to opencode --no-launch --json
-
-# Open the untouched original session
-possess resume <qualified-id>
-
-# Inspect paths, versions, and available integration tiers
-possess doctor --json
-possess adapters
+possess show SESSION_ID
+possess handoff SESSION_ID --to codex
+possess resume SESSION_ID
 ```
 
-Session IDs are qualified as `harness:vendor-id`. An unqualified unique ID or prefix is
-accepted by commands; ambiguous prefixes are rejected.
+Add `--model` or `--agent` to a handoff to choose either explicitly.
+`--no-launch` prepares the handoff without starting the destination harness.
+Run `possess handoff --help` for the rest.
 
-## Data and privacy
-
-State defaults to `~/.local/share/possess`, or `POSSESS_HOME` when set:
-
-```text
-handoffs/<uuid>/
-  manifest.json       provenance, hashes, compatibility, sensitivity counts
-  session.json        complete portable session
-  handoff.md          context sent to a bootstrap destination
-  opencode-session.json  generated only for an OpenCode destination
-blobs/<prefix>/<sha256>.zst
-  deduplicated sanitized source snapshots
-```
-
-Directories use owner-only mode `0700` and files use `0600` on Unix. Possess excludes
-authentication stores, vendor system prompts, encrypted reasoning, permission grants,
-and lock files. The sensitivity scan reports only categories and counts; it never prints
-matched secret values.
-
-Git capture includes repository identity, branch, HEAD, worktree status, textual staged
-and unstaged diffs, and untracked paths. Untracked file contents are not copied. Workspace
-files stay where they are and remain the destination agent's source of truth.
-
-## Configuration
-
-Create `~/.config/possess/config.toml` only when defaults need changing:
-
-```toml
-context_tokens = 16000
-reduced_motion = false
-ascii_only = false
-
-[binaries]
-codex = "/opt/homebrew/bin/codex"
-claude = "/Users/me/.local/bin/claude"
-
-[homes]
-grok = "/Volumes/agent-state/grok"
-```
-
-Possess also honors `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `GROK_HOME`, `XDG_DATA_HOME`,
-`XDG_CONFIG_HOME`, and `POSSESS_HOME`.
-
-## Why the code is structured this way
-
-Each harness adapter owns only discovery and normalization. Destination writers are kept
-separate and gated because readers can safely tolerate new fields while writers cannot
-safely guess new invariants. The `PortableSessionV1` boundary keeps the TUI, CLI,
-packaging, and future adapters independent of vendor event names.
-
-Large histories are streamed only after selection. Startup reads Codex/OpenCode indexes
-and bounded Claude/Grok metadata, so a multi-hundred-megabyte rollout does not delay the
-first screen.
-
-## Development
+## Working on Possess
 
 ```bash
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test
-cargo build --release
 ```
 
-Adapter changes should include sanitized fixtures for the vendor version they claim to
-support. Never widen a private-writer version gate based only on a successful parse.
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the project’s comment and compatibility rules.
+The [architecture notes](docs/architecture.md) explain how discovery and
+handoffs work. [CONTRIBUTING.md](CONTRIBUTING.md) covers adapter changes and
+comments: explain the reason for the code, not what the next line does.
