@@ -44,16 +44,31 @@ boundaries are in [Architecture](docs/architecture.md).
 
 ## Install
 
-Rust 1.92 or newer is recommended while the project is under active development.
+Possess supports macOS and Linux. Building from source requires Rust 1.92 or newer,
+Git, and at least one supported coding harness installed and authenticated.
 
 ```bash
-cargo install --path .
+git clone https://github.com/steven-p-walsh/Possess.git
+cd Possess
+cargo install --path . --locked
+
 possess doctor
 possess
 ```
 
-Possess currently targets macOS and Linux. Possess itself does not require API keys or call
-model APIs; invoked harnesses continue to own their authentication and network behavior.
+Cargo installs the binary in `~/.cargo/bin`. If `possess` is not found after installation,
+add that directory to your shell path:
+
+```bash
+echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+```
+
+Prebuilt archives, manual release installation, upgrades, uninstall steps, and harness
+configuration are covered in [Installation](docs/installation.md).
+
+Possess itself does not require API keys or call model APIs; invoked harnesses continue
+to own their authentication and network behavior.
 
 Tagged releases build native macOS and Linux archives through
 [the release workflow](.github/workflows/release.yml).
