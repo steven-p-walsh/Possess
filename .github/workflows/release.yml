@@ -21,8 +21,9 @@ jobs:
       - name: Package binary
         shell: bash
         run: |
-          archive="possess-${RUNNER_OS,,}-${RUNNER_ARCH,,}.tar.gz"
-          tar -C target/release -czf "$archive" possess
+          archive=$(printf 'possess-%s-%s.tar.gz' "$RUNNER_OS" "$RUNNER_ARCH" | tr '[:upper:]' '[:lower:]')
+          # macOS resource forks are machine-local metadata, not part of the binary.
+          COPYFILE_DISABLE=1 tar -C target/release -czf "$archive" possess
       - uses: actions/upload-artifact@v4
         with:
           name: possess-${{ runner.os }}-${{ runner.arch }}
@@ -39,4 +40,6 @@ jobs:
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          # This job has no checkout, so gh cannot infer the repository from Git.
+          GH_REPO: ${{ github.repository }}
         run: gh release create "$GITHUB_REF_NAME" artifacts/* --generate-notes
