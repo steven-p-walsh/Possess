@@ -389,7 +389,7 @@ fn store_blob(config: &Config, source: &Path, logical_path: String) -> Result<Ra
         set_private_file(&temp)?;
         match std::fs::rename(&temp, &destination) {
             Ok(()) => {}
-            Err(error) if destination.exists() => {
+            Err(_error) if destination.exists() => {
                 let _ = std::fs::remove_file(temp);
             }
             Err(error) => return Err(error.into()),
